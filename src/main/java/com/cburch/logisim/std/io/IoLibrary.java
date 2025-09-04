@@ -73,6 +73,7 @@ public class IoLibrary extends Library {
       tools = new ArrayList<>();
       tools.addAll(FactoryDescription.getTools(IoLibrary.class, DESCRIPTIONS));
       tools.add(new AddTool(Video.factory));
+      tools.add(new AddTool(VgaDisplay.factory));
     }
     return tools;
   }
