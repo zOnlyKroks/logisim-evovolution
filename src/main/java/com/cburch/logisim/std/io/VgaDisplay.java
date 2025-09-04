@@ -71,8 +71,8 @@ class VgaDisplay extends ManagedComponent implements ToolTipMaker, AttributeList
             final var scale = attrs.getValue(ATTR_SCALE);
             final var width = attrs.getValue(ATTR_WIDTH);
             final var height = attrs.getValue(ATTR_HEIGHT);
-            final var dispWidth = Math.max(scale * width / 4 + 60, 140);
-            final var dispHeight = Math.max(scale * height / 4 + 60, 100);
+            final var dispWidth = Math.max(scale * width / 4 + 30, 140);
+            final var dispHeight = Math.max(scale * height / 4, 100);
             return Bounds.create(-20, -50, dispWidth + 30, dispHeight + 60);
         }
 
