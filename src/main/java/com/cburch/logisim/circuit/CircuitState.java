@@ -52,6 +52,7 @@ public class CircuitState implements InstanceData {
   private class MyCircuitListener implements CircuitListener {
     @Override
     public void circuitChanged(CircuitEvent event) {
+      wiresStale = true;
       markSubtreeDirty();
       int action = event.getAction();
 
@@ -212,7 +213,7 @@ public class CircuitState implements InstanceData {
   private ArrayList<Propagator.SimulatorEvent> dirtyPointsWorking = new ArrayList<>();
   /** Substates being processed */
   private CircuitState[] substatesWorking = new CircuitState[0];
-  private boolean substatesDirty = true;
+  private volatile boolean substatesDirty = true;
 
   /**
    * True if this state or any state below it may have work pending (or has not been processed
@@ -221,6 +222,14 @@ public class CircuitState implements InstanceData {
    * queues work must call {@link #markSubtreeDirty()}.
    */
   private volatile boolean subtreeDirty = true;
+
+  // Work queued in this state itself (not below it). Each is set after the work is added to its
+  // list and cleared before the list is taken, so work queued concurrently is never lost. States
+  // that are only on the way to a busy descendant skip their own processing.
+  private volatile boolean pointsPending = true;
+  private volatile boolean componentsPending = true;
+  /** The wire connectivity may have changed; the wire state must be brought up to date. */
+  private volatile boolean wiresStale = true;
 
   /** Flags this state and all its ancestors as having pending work. May be called from any thread. */
   private void markSubtreeDirty() {
@@ -322,6 +331,8 @@ public class CircuitState implements InstanceData {
       this.dirtyComponents.addAll(src.dirtyComponents);
       this.dirtyPoints.addAll(src.dirtyPoints);
     }
+    pointsPending = true;
+    componentsPending = true;
     markSubtreeDirty();
     if (src.wireData != null) {
       this.wireData = circuit.wires.newState(this); // all buses will be marked as dirty
@@ -440,6 +451,7 @@ public class CircuitState implements InstanceData {
     synchronized (dirtyLock) {
       dirtyComponents.addAll(circuit.getNonWires());
     }
+    componentsPending = true;
     markSubtreeDirty();
   }
 
@@ -447,6 +459,7 @@ public class CircuitState implements InstanceData {
     synchronized (dirtyLock) {
       dirtyComponents.add(comp);
     }
+    componentsPending = true;
     markSubtreeDirty();
   }
 
@@ -454,6 +467,7 @@ public class CircuitState implements InstanceData {
     synchronized (dirtyLock) {
       dirtyComponents.addAll(comps);
     }
+    componentsPending = true;
     markSubtreeDirty();
   }
 
@@ -461,6 +475,7 @@ public class CircuitState implements InstanceData {
     synchronized (dirtyLock) {
       dirtyPoints.add(ev);
     }
+    pointsPending = true;
     markSubtreeDirty();
   }
 
@@ -468,28 +483,31 @@ public class CircuitState implements InstanceData {
     if (!subtreeDirty) return;
     // Cleared before the lists are taken: work queued from now on sets it again for the next step.
     subtreeDirty = false;
-    if (!dirtyComponentsWorking.isEmpty()) {
-      throw new IllegalStateException("INTERNAL ERROR: dirtyComponentsWorking not empty");
-    }
-    synchronized (dirtyLock) {
-      final var other = dirtyComponents;
-      dirtyComponents = dirtyComponentsWorking; // dirtyComponents is now empty
-      dirtyComponentsWorking = other; // working set is now ready to process
-      if (substatesDirty) {
-        substatesDirty = false;
-        substatesWorking = substates.toArray(substatesWorking);
+    if (componentsPending || substatesDirty) {
+      componentsPending = false; // before the list is taken, see the field comment
+      if (!dirtyComponentsWorking.isEmpty()) {
+        throw new IllegalStateException("INTERNAL ERROR: dirtyComponentsWorking not empty");
       }
-    }
-    try { // comp.propagate() can fail if external (or std) library is buggy
-      for (final var comp : dirtyComponentsWorking) {
-        comp.propagate(this);
-        // pin values also get propagated to parent state
-        if (comp.getFactory() instanceof Pin && parentState != null) {
-          parentComp.propagate(parentState);
+      synchronized (dirtyLock) {
+        final var other = dirtyComponents;
+        dirtyComponents = dirtyComponentsWorking; // dirtyComponents is now empty
+        dirtyComponentsWorking = other; // working set is now ready to process
+        if (substatesDirty) {
+          substatesDirty = false;
+          substatesWorking = substates.toArray(substatesWorking);
         }
       }
-    } finally {
-      dirtyComponentsWorking.clear();
+      try { // comp.propagate() can fail if external (or std) library is buggy
+        for (final var comp : dirtyComponentsWorking) {
+          comp.propagate(this);
+          // pin values also get propagated to parent state
+          if (comp.getFactory() instanceof Pin && parentState != null) {
+            parentComp.propagate(parentState);
+          }
+        }
+      } finally {
+        dirtyComponentsWorking.clear();
+      }
     }
     for (final var substate : substatesWorking) {
       if (substate == null) break;
@@ -501,18 +519,21 @@ public class CircuitState implements InstanceData {
 
   void processDirtyPoints() {
     if (!subtreeDirty) return;
-    if (!dirtyPointsWorking.isEmpty()) {
-      throw new IllegalStateException("INTERNAL ERROR: dirtyPointsWorking not empty");
-    }
-    synchronized (dirtyLock) {
-      final var other = dirtyPoints;
-      dirtyPoints = dirtyPointsWorking; // dirtyPoints is now empty
-      dirtyPointsWorking = other; // working set is now ready to process
-      if (substatesDirty) {
-        substatesDirty = false;
-        substatesWorking = substates.toArray(substatesWorking);
+    if (pointsPending || wiresStale || substatesDirty) {
+      pointsPending = false; // before the list is taken, see the field comment
+      wiresStale = false;
+      if (!dirtyPointsWorking.isEmpty()) {
+        throw new IllegalStateException("INTERNAL ERROR: dirtyPointsWorking not empty");
       }
-    }
+      synchronized (dirtyLock) {
+        final var other = dirtyPoints;
+        dirtyPoints = dirtyPointsWorking; // dirtyPoints is now empty
+        dirtyPointsWorking = other; // working set is now ready to process
+        if (substatesDirty) {
+          substatesDirty = false;
+          substatesWorking = substates.toArray(substatesWorking);
+        }
+      }
     // Note: When a new wire map is created (because wires or splitters have
     // changed, for example), we need to mark all the splitter locations as
     // dirty. This used to be handled here by detecting when the map was voided,
@@ -523,8 +544,9 @@ public class CircuitState implements InstanceData {
     // run-time exception. Instead, we now put the splitter location list in
     // the wire map itself when it is created (which is done by CircuitWires
     // carefully in a thread-safe way).
-    circuit.wires.propagate(this, dirtyPointsWorking);
-    dirtyPointsWorking.clear();
+      circuit.wires.propagate(this, dirtyPointsWorking);
+      dirtyPointsWorking.clear();
+    }
 
     for (final var substate : substatesWorking) {
       if (substate == null) break;
@@ -608,6 +630,7 @@ public class CircuitState implements InstanceData {
         substatesDirty = true;
         dirtyComponents.add(comp);
       }
+      componentsPending = true;
       markSubtreeDirty();
     } else {
       componentData.put(comp, data);
@@ -663,7 +686,10 @@ public class CircuitState implements InstanceData {
         }
       }
     }
-    if (anyDirty) markSubtreeDirty();
+    if (anyDirty) {
+      componentsPending = true;
+      markSubtreeDirty();
+    }
   }
 
   /** for CircuitWires - to set value at point */
@@ -715,6 +741,7 @@ public class CircuitState implements InstanceData {
       synchronized (dirtyLock) {
         for (final var comp : affected) dirtyComponents.add(comp);
       }
+      componentsPending = true;
       markSubtreeDirty();
       base.locationTouched(this, p);
     }
