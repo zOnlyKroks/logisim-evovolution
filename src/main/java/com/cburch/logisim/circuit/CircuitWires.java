@@ -387,7 +387,7 @@ public class CircuitWires {
   static class State {
     /** Original source of connectivity info */
     private Connectivity connectivity; // original source of connectivity info
-    HashMap<Location, ValuedBus> busAt = new HashMap<>();
+    LocationMap<ValuedBus> busAt = new LocationMap<>();
     ValuedBus[] buses;
     int numDirty;
     static final ValuedBus[] EMPTY_DEPENDENCIES = new ValuedBus[0];
