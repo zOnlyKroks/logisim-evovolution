@@ -142,8 +142,8 @@ public class Propagator {
           new QueueOfQueues<>(simQueueType);
       case AppPreferences.SIM_QUEUE_LINKED -> new LinkedQueue<>();
       case AppPreferences.SIM_QUEUE_SPLAY  -> new SplayQueue<>();
-      // case AppPreferences.SIM_QUEUE_PRIORITY  -> new PriorityEventQueue<>();
-      default -> new PriorityEventQueue<>();
+      case AppPreferences.SIM_QUEUE_PRIORITY -> new PriorityEventQueue<>();
+      default -> new QueueOfQueues<>(AppPreferences.SIM_QUEUE_LIST_OF_QUEUES);
     };
     updateRandomness();
     updateSimLimit();
