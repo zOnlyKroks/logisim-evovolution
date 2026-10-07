@@ -52,6 +52,7 @@ public class CircuitState implements InstanceData {
   private class MyCircuitListener implements CircuitListener {
     @Override
     public void circuitChanged(CircuitEvent event) {
+      markSubtreeDirty();
       int action = event.getAction();
 
       if (action == CircuitEvent.ACTION_ADD) {
@@ -213,6 +214,21 @@ public class CircuitState implements InstanceData {
   private CircuitState[] substatesWorking = new CircuitState[0];
   private boolean substatesDirty = true;
 
+  /**
+   * True if this state or any state below it may have work pending (or has not been processed
+   * since it was created or its circuit changed). Sub-circuits without pending work are skipped
+   * on every propagation step, which matters for designs with many instances. Anything that
+   * queues work must call {@link #markSubtreeDirty()}.
+   */
+  private volatile boolean subtreeDirty = true;
+
+  /** Flags this state and all its ancestors as having pending work. May be called from any thread. */
+  private void markSubtreeDirty() {
+    for (var state = this; state != null; state = state.parentState) {
+      state.subtreeDirty = true;
+    }
+  }
+
 
   private static int lastId = 0;
   private final int id = lastId++;
@@ -306,6 +322,7 @@ public class CircuitState implements InstanceData {
       this.dirtyComponents.addAll(src.dirtyComponents);
       this.dirtyPoints.addAll(src.dirtyPoints);
     }
+    markSubtreeDirty();
     if (src.wireData != null) {
       this.wireData = circuit.wires.newState(this); // all buses will be marked as dirty
     }
@@ -423,27 +440,34 @@ public class CircuitState implements InstanceData {
     synchronized (dirtyLock) {
       dirtyComponents.addAll(circuit.getNonWires());
     }
+    markSubtreeDirty();
   }
 
   public void markComponentAsDirty(Component comp) {
     synchronized (dirtyLock) {
       dirtyComponents.add(comp);
     }
+    markSubtreeDirty();
   }
 
   public void markComponentsDirty(Collection<Component> comps) {
     synchronized (dirtyLock) {
       dirtyComponents.addAll(comps);
     }
+    markSubtreeDirty();
   }
 
   void markPointAsDirty(Propagator.SimulatorEvent ev) {
     synchronized (dirtyLock) {
       dirtyPoints.add(ev);
     }
+    markSubtreeDirty();
   }
 
   void processDirtyComponents() {
+    if (!subtreeDirty) return;
+    // Cleared before the lists are taken: work queued from now on sets it again for the next step.
+    subtreeDirty = false;
     if (!dirtyComponentsWorking.isEmpty()) {
       throw new IllegalStateException("INTERNAL ERROR: dirtyComponentsWorking not empty");
     }
@@ -470,10 +494,13 @@ public class CircuitState implements InstanceData {
     for (final var substate : substatesWorking) {
       if (substate == null) break;
       substate.processDirtyComponents();
+      // A sub-circuit that still has work keeps this state (and so its ancestors) in the next step.
+      if (substate.subtreeDirty) subtreeDirty = true;
     }
   }
 
   void processDirtyPoints() {
+    if (!subtreeDirty) return;
     if (!dirtyPointsWorking.isEmpty()) {
       throw new IllegalStateException("INTERNAL ERROR: dirtyPointsWorking not empty");
     }
@@ -581,6 +608,7 @@ public class CircuitState implements InstanceData {
         substatesDirty = true;
         dirtyComponents.add(comp);
       }
+      markSubtreeDirty();
     } else {
       componentData.put(comp, data);
     }
