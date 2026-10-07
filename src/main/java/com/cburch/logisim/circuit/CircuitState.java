@@ -493,7 +493,7 @@ public class CircuitState implements InstanceData {
     }
     for (final var substate : substatesWorking) {
       if (substate == null) break;
-      substate.processDirtyComponents();
+      if (substate.subtreeDirty) substate.processDirtyComponents();
       // A sub-circuit that still has work keeps this state (and so its ancestors) in the next step.
       if (substate.subtreeDirty) subtreeDirty = true;
     }
@@ -528,7 +528,7 @@ public class CircuitState implements InstanceData {
 
     for (final var substate : substatesWorking) {
       if (substate == null) break;
-      substate.processDirtyPoints();
+      if (substate.subtreeDirty) substate.processDirtyPoints();
     }
   }
 
@@ -654,11 +654,16 @@ public class CircuitState implements InstanceData {
       }
       base.locationTouched(this, p);
     }
-    for (final var bc : connections) {
-      if (bc.isSink || (bc.isBidirectional && !Value.equal(v, bc.drivenValue))) {
-        markComponentAsDirty(bc.component);
+    var anyDirty = false;
+    synchronized (dirtyLock) {
+      for (final var bc : connections) {
+        if (bc.isSink || (bc.isBidirectional && !Value.equal(v, bc.drivenValue))) {
+          dirtyComponents.add(bc.component);
+          anyDirty = true;
+        }
       }
     }
+    if (anyDirty) markSubtreeDirty();
   }
 
   /** for CircuitWires - to set value at point */
@@ -706,10 +711,11 @@ public class CircuitState implements InstanceData {
   }
 
   private void markDirtyComponents(Location p, Component[] affected) {
-    for (final var comp : affected) {
-      markComponentAsDirty(comp);
-    }
     if (affected.length > 0) {
+      synchronized (dirtyLock) {
+        for (final var comp : affected) dirtyComponents.add(comp);
+      }
+      markSubtreeDirty();
       base.locationTouched(this, p);
     }
   }
