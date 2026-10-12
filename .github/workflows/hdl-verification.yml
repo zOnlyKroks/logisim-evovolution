@@ -1,5 +1,8 @@
 # Simulates the VHDL and Verilog generated for components and checks it against the Logisim
 # simulation model. See docs/hdl_verification.md.
+#
+# Runs automatically for changes to the sources, and manually from the Actions tab ("Run workflow"),
+# optionally for one HDL or a subset of the test cases.
 
 name: "HDL verification"
 on:
@@ -18,6 +21,20 @@ on:
       - 'src/test/hdl/**'
       - 'build.gradle.kts'
       - '.github/workflows/hdl-verification.yml'
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'HDL to verify'
+        type: choice
+        options:
+          - both
+          - vhdl
+          - verilog
+        default: both
+      cases:
+        description: 'Only run the test cases whose name matches this regular expression (empty: all), e.g. ^adder'
+        type: string
+        default: ''
 
 env:
   JDK_VERSION: 21
@@ -52,10 +69,23 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ghdl iverilog
         python -m pip install vunit_hdl
+        ghdl --version | head -n 1
+        iverilog -V 2>&1 | head -n 1
     - name: "Run the HDL verification suite"
+      env:
+        # passed through the environment, so the inputs cannot inject shell code
+        HDL_LANGUAGE: ${{ inputs.language || 'both' }}
+        HDL_CASES: ${{ inputs.cases }}
       run: |
+        case "$HDL_LANGUAGE" in
+          vhdl) task=hdlVerificationVhdl ;;
+          verilog) task=hdlVerificationVerilog ;;
+          *) task=hdlVerification ;;
+        esac
+        options=(--continue -PhdlPython=python)
+        if [ -n "$HDL_CASES" ]; then options+=("-PhdlCases=$HDL_CASES"); fi
         chmod +x gradlew
-        ./gradlew hdlVerification --continue -PhdlPython=python
+        ./gradlew "$task" "${options[@]}"
     - name: "Upload results"
       if: always()
       uses: actions/upload-artifact@v7
@@ -65,3 +95,4 @@ jobs:
           build/test-results/hdlVerificationVhdl/
           build/test-results/hdlVerificationVerilog/
           build/hdl-verification/suite/
+        if-no-files-found: ignore

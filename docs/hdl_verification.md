@@ -43,9 +43,15 @@ own.
   on the `PATH`. VUnit picks the first one it finds; set `VUNIT_SIMULATOR` (e.g. `ghdl` or `nvc`) to choose.
 * For Verilog: [Icarus Verilog](https://steveicarus.github.io/iverilog/) (`iverilog` and `vvp`) on the `PATH`.
 
-On Debian or Ubuntu, `sudo apt-get install ghdl iverilog` installs both simulators. The GitHub workflow
-[`hdl-verification.yml`](../.github/workflows/hdl-verification.yml) runs the suite on every pull request that touches Java
-sources.
+On Debian or Ubuntu, `sudo apt-get install ghdl iverilog` installs both simulators.
+
+No local installation is needed to run the suite on GitHub: the workflow
+[`hdl-verification.yml`](../.github/workflows/hdl-verification.yml) runs it on every pull request that touches Java
+sources, and it can be started manually in the repository's *Actions* tab ("HDL verification", *Run workflow*) or with
+`gh workflow run hdl-verification.yml -f language=vhdl -f cases='^adder'`. The manual run can be restricted to one HDL
+and to the test cases matching a regular expression. The results appear in the job summary, and the JUnit reports and
+the generated suite are attached to the run as an artifact. GitHub only offers manual runs for workflows on the
+repository's default branch.
 
 ## Running the suite ##
 

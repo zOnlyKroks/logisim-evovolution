@@ -14,7 +14,10 @@ failure is then expected and does not fail the run, while passing fails the run,
 marker gets removed.
 """
 
+import html
+import os
 import xml.etree.ElementTree as ElementTree
+from pathlib import Path
 
 PASS = "pass"
 FAIL = "fail"
@@ -103,4 +106,32 @@ def print_summary(language, verdicts, known_issues):
         print("Failed:")
         for name in counts[FAIL]:
             print(f"  {name}")
-    return bool(verdicts) and not counts[FAIL] and not counts[UNEXPECTED_PASS]
+    succeeded = bool(verdicts) and not counts[FAIL] and not counts[UNEXPECTED_PASS]
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        write_github_summary(Path(os.environ["GITHUB_STEP_SUMMARY"]), language, succeeded, counts, known_issues)
+    return succeeded
+
+
+def write_github_summary(path, language, succeeded, counts, known_issues):
+    """Appends the verdicts as Markdown to the job summary of a GitHub Actions run."""
+    lines = [
+        f"### {'✅' if succeeded else '❌'} {language} HDL verification",
+        "",
+        "| Passed | Failed | Known issues | Known issues passing |",
+        "| ---: | ---: | ---: | ---: |",
+        f"| {len(counts[PASS])} | {len(counts[FAIL])} | {len(counts[EXPECTED_FAILURE])} "
+        f"| {len(counts[UNEXPECTED_PASS])} |",
+        "",
+    ]
+    if counts[FAIL]:
+        lines += ["**Failed** (see the job log or the uploaded results):", ""]
+        lines += [f"* `{name}`" for name in counts[FAIL]] + [""]
+    if counts[UNEXPECTED_PASS]:
+        lines += ["**Passing despite a known issue marker** (remove the marker):", ""]
+        lines += [f"* `{name}`" for name in counts[UNEXPECTED_PASS]] + [""]
+    if counts[EXPECTED_FAILURE]:
+        lines += ["<details><summary>Known issues (expected to fail)</summary>", ""]
+        lines += [f"* `{name}`: {html.escape(known_issues[name])}" for name in counts[EXPECTED_FAILURE]]
+        lines += ["", "</details>", ""]
+    with path.open("a", encoding="utf-8") as summary:
+        summary.write("\n".join(lines) + "\n")
