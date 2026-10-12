@@ -3,6 +3,8 @@
 # Changes #
 
 * @dev (????-??-??)
+  * Added an HDL verification suite that simulates the VHDL (with VUnit) and Verilog (with Icarus Verilog) generated for
+    components and checks it against the Logisim simulation [#742] (@zOnlyKroks).
   * Showed source line numbers and applicable set/sequence numbers for failed command-line test vectors [#3060] (@goudan789).
   * Added TTL 74390: dual decade ripple counter (@Vadimatorik).
   * Optimized file dialog performance via startup background warmup and introduced scoped directory memory to isolate

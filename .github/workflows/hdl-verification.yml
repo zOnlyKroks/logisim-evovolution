@@ -1,0 +1,67 @@
+# Simulates the VHDL and Verilog generated for components and checks it against the Logisim
+# simulation model. See docs/hdl_verification.md.
+
+name: "HDL verification"
+on:
+  push:
+    # main is left just for emergency cases.
+    branches: [ main ]
+    paths:
+      - 'src/**/*.java'
+      - 'src/test/hdl/**'
+      - 'build.gradle.kts'
+      - '.github/workflows/hdl-verification.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**/*.java'
+      - 'src/test/hdl/**'
+      - 'build.gradle.kts'
+      - '.github/workflows/hdl-verification.yml'
+
+env:
+  JDK_VERSION: 21
+  JDK_DISTRO: 'temurin'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  hdl_verification:
+    name: "VHDL (VUnit, GHDL) and Verilog (Icarus Verilog)"
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: "Checkout sources"
+      uses: actions/checkout@v7
+    - name: Set up JDK ${{ env.JDK_VERSION }} ${{ env.JDK_DISTRO }}
+      uses: actions/setup-java@v6
+      with:
+        java-version: ${{ env.JDK_VERSION }}
+        distribution: ${{ env.JDK_DISTRO }}
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Cache Gradle packages
+      uses: actions/cache@v6
+      with:
+        path: ~/.gradle/caches
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
+        restore-keys: ${{ runner.os }}-gradle
+    - name: "Install simulators"
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ghdl iverilog
+        python -m pip install vunit_hdl
+    - name: "Run the HDL verification suite"
+      run: |
+        chmod +x gradlew
+        ./gradlew hdlVerification --continue -PhdlPython=python
+    - name: "Upload results"
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: hdl-verification-results
+        path: |
+          build/test-results/hdlVerificationVhdl/
+          build/test-results/hdlVerificationVerilog/
+          build/hdl-verification/suite/

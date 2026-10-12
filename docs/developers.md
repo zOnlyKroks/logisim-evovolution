@@ -22,6 +22,7 @@
     * [Adding new translation](localization.md#adding-new-translation)
     * [Using trans-tool](localization.md#using-trans-tool)
   * [Implementing TTL components](implementing_ttl_components.md)
+  * [HDL verification suite](hdl_verification.md)
   * [How to contribute](#how-to-contribute)
 
 ---

@@ -282,6 +282,67 @@ tasks.named("processResources") {
   dependsOn(generateHelpSets)
 }
 
+/*
+ * HDL verification suite: simulates the VHDL/Verilog generated for components and checks it
+ * against the Logisim simulation model. See docs/hdl_verification.md.
+ *
+ * Optional project properties:
+ *   -PhdlCases=<regex>     only generate the test cases whose name matches
+ *   -PhdlPython=<python>   Python interpreter with vunit_hdl installed (default: python3/python)
+ */
+val hdlVerificationDir = layout.buildDirectory.dir("hdl-verification")
+val hdlVerificationPython = providers.gradleProperty("hdlPython")
+    .orElse(if (OperatingSystem.current().isWindows) "python" else "python3")
+
+val generateHdlVerificationSuite = tasks.register<JavaExec>("generateHdlVerificationSuite") {
+  group = "verification"
+  description = "Generates the HDL, test harnesses and Logisim reference vectors of the HDL verification suite."
+  dependsOn("testClasses")
+  // Logisim scans the class path for FPGA boards and fails on entries that do not exist.
+  classpath = sourceSets.test.get().runtimeClasspath.filter { it.exists() }
+  mainClass.set("com.cburch.logisim.fpga.hdlgenerator.verification.HdlVerificationSuite")
+  jvmArgs("--enable-native-access=ALL-UNNAMED", "-Djava.awt.headless=true")
+  args(hdlVerificationDir.get().dir("suite").asFile.absolutePath)
+  providers.gradleProperty("hdlCases").orNull?.let { args(it) }
+  outputs.dir(hdlVerificationDir.map { it.dir("suite") })
+  outputs.upToDateWhen { false }
+}
+
+val hdlVerificationVhdl = tasks.register<Exec>("hdlVerificationVhdl") {
+  group = "verification"
+  description = "Runs the VHDL part of the HDL verification suite with VUnit (needs vunit_hdl and GHDL or NVC)."
+  dependsOn(generateHdlVerificationSuite)
+  val outputDir = hdlVerificationDir.get().asFile
+  commandLine(
+      hdlVerificationPython.get(),
+      file("src/test/hdl/run_vunit.py").absolutePath,
+      "--suite", outputDir.resolve("suite/vhdl").absolutePath,
+      "--output-path", outputDir.resolve("vunit_out").absolutePath,
+      "--xunit-xml", layout.buildDirectory.file("test-results/hdlVerificationVhdl/TEST-vunit.xml").get().asFile.absolutePath,
+      "--num-threads", Runtime.getRuntime().availableProcessors().toString(),
+  )
+}
+
+val hdlVerificationVerilog = tasks.register<Exec>("hdlVerificationVerilog") {
+  group = "verification"
+  description = "Runs the Verilog part of the HDL verification suite with Icarus Verilog."
+  dependsOn(generateHdlVerificationSuite)
+  val outputDir = hdlVerificationDir.get().asFile
+  commandLine(
+      hdlVerificationPython.get(),
+      file("src/test/hdl/run_iverilog.py").absolutePath,
+      "--suite", outputDir.resolve("suite/verilog").absolutePath,
+      "--output-path", outputDir.resolve("iverilog_out").absolutePath,
+      "--xunit-xml", layout.buildDirectory.file("test-results/hdlVerificationVerilog/TEST-iverilog.xml").get().asFile.absolutePath,
+  )
+}
+
+tasks.register("hdlVerification") {
+  group = "verification"
+  description = "Runs the complete HDL verification suite (VHDL with VUnit, Verilog with Icarus Verilog)."
+  dependsOn(hdlVerificationVhdl, hdlVerificationVerilog)
+}
+
 tasks.register<Jar>("sourcesJar") {
   group = "build"
   description = "Creates a JAR archive with project sources."

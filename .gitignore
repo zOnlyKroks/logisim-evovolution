@@ -292,3 +292,6 @@ gradle-app.setting
 
 # python代码
 *.py
+# ...except the HDL verification suite runners
+!/src/test/hdl/*.py
+__pycache__/
