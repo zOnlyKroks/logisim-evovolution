@@ -38,12 +38,25 @@ own.
 
 ## Requirements ##
 
-* Python 3 with VUnit: `python -m pip install vunit_hdl`
-* For VHDL: a simulator supported by VUnit, e.g. [GHDL](https://github.com/ghdl/ghdl) or [NVC](https://www.nickg.me.uk/nvc/),
-  on the `PATH`. VUnit picks the first one it finds; set `VUNIT_SIMULATOR` (e.g. `ghdl` or `nvc`) to choose.
-* For Verilog: [Icarus Verilog](https://steveicarus.github.io/iverilog/) (`iverilog` and `vvp`) on the `PATH`.
+Only Python 3 (`python3`, or `python` on Windows) needs to be installed. On Windows and Linux (x86-64), the task
+`setUpHdlVerification`, which the other tasks depend on, sets up everything else in `.gradle/hdl-verification`, without
+touching the system:
 
-On Debian or Ubuntu, `sudo apt-get install ghdl iverilog` installs both simulators.
+* a Python environment with [VUnit](https://vunit.github.io/), see [`requirements.txt`](../src/test/hdl/requirements.txt),
+* [GHDL](https://github.com/ghdl/ghdl) for VHDL, from the GHDL release archives,
+* [Icarus Verilog](https://steveicarus.github.io/iverilog/) for Verilog, from conda-forge (installed with micromamba).
+
+The downloads are pinned in [`setup_environment.py`](../src/test/hdl/setup_environment.py) and their checksums are
+verified. They are downloaded once; later runs reuse them, also after `./gradlew clean`.
+
+On Linux the downloaded GHDL needs glibc 2.38 or newer (e.g. Ubuntu 24.04, Debian 13, Fedora 39). Where it does not run,
+or on other systems, install the simulators yourself and use them with `-PhdlSimulators=system` (see below):
+
+* Debian or Ubuntu: `sudo apt-get install ghdl iverilog`
+* Windows: `winget install ghdl.ghdl.ucrt64.mcode` and `winget install Icarus.Verilog`
+
+VUnit can also use other simulators, e.g. [NVC](https://www.nickg.me.uk/nvc/); set `VUNIT_SIMULATOR` (e.g. `nvc`) to
+choose one.
 
 No local installation is needed to run the suite on GitHub: the workflow
 [`hdl-verification.yml`](../.github/workflows/hdl-verification.yml) runs it on every pull request that touches Java
@@ -61,10 +74,17 @@ repository's default branch.
 ./gradlew hdlVerificationVerilog   # only Verilog
 ```
 
-Optional project properties:
+Optional project properties, which can also be set once per machine in `~/.gradle/gradle.properties` (e.g.
+`hdlPath=C:\\ghdl\\bin;C:\\iverilog\\bin`):
 
 * `-PhdlCases=<regex>` only generates the test cases whose name matches, e.g. `-PhdlCases=^adder`.
-* `-PhdlPython=<python>` selects the Python interpreter that has VUnit installed (default `python3`, or `python` on Windows).
+* `-PhdlSimulators=system` uses the simulators on the `PATH` instead of downloading them.
+* `-PhdlPath=<directories>` searches these directories for the simulators first. Separate them with the platform's path
+  separator (`;` on Windows, `:` elsewhere).
+* `-PhdlPython=<python>` uses this Python interpreter, which must have VUnit installed, instead of the Python environment
+  set up by `setUpHdlVerification`.
+
+Restart the IDE and stop the Gradle daemon (`./gradlew --stop`) after changing the `PATH`, as both keep the old one.
 
 The task `generateHdlVerificationSuite` only writes the suite to `build/hdl-verification/suite`, which needs neither
 Python nor a simulator. The runners can then be started by hand, which gives access to all VUnit options, e.g. to open
@@ -77,25 +97,31 @@ python src/test/hdl/run_iverilog.py --suite build/hdl-verification/suite/verilog
 
 ## Reading the results ##
 
-Each runner ends with a summary such as
+If everything works, each runner prints a single line:
 
 ```text
-VHDL HDL verification: 85 passed, 0 failed, 32 known issues, 0 known issues passing
+VHDL: all 117 test cases match the Logisim simulation
+Verilog: all 117 test cases match the Logisim simulation (60 known issues)
 ```
 
-and writes a JUnit XML report to `build/test-results/hdlVerificationVhdl` and `build/test-results/hdlVerificationVerilog`.
-For every deviating vector (up to ten per test case) the test bench prints the inputs and the expected and actual outputs,
-port by port:
+Only failing test cases are reported in detail: the first deviating vectors with the inputs and the expected and actual
+outputs, port by port, the number of deviating vectors, or the compiler errors:
 
 ```text
-ERROR - Response deviates from the Logisim simulation (vector file line 520)
-          inputs   : dataA=00000001, shiftAmount=010
-          expected : result=00000000
-          actual   : result=11000000
-ERROR - Number of vectors (out of 2048) where the generated HDL deviates from the Logisim simulation - Got 896. Expected 0.
+VHDL: 1 of 117 test cases FAILED
+
+  shifter_sra_w8
+    Response deviates from the Logisim simulation (vector file line 520)
+      inputs   : dataA=00000001, shiftAmount=010
+      expected : result=00000000
+      actual   : result=11000000
+    ...
+    Number of vectors (out of 2048) where the generated HDL deviates from the Logisim simulation - Got 896. Expected 0.
 ```
 
-A test case whose generated VHDL does not compile fails as well, without hiding the results of the other test cases.
+A test case whose generated VHDL does not compile fails as well, without hiding the results of the other test cases. The
+complete logs are in `build/hdl-verification/vunit_out/vunit.log` and `build/hdl-verification/iverilog_out/<test case>/log.txt`,
+and the JUnit XML reports in `build/test-results/hdlVerificationVhdl` and `build/test-results/hdlVerificationVerilog`.
 
 The generated files of a test case are in `build/hdl-verification/suite/<vhdl|verilog>/<test case>/`:
 

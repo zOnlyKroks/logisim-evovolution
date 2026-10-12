@@ -28,6 +28,8 @@ public class MultiplierHdlGeneratorFactory extends AbstractHdlGeneratorFactory {
   private static final int CALC_BITS_ID = -2;
   private static final String UNSIGNED_STRING = "unsignedMultiplier";
   private static final int UNSIGNED_ID = -3;
+  private static final String EXTENDED_BITS_STRING = "extendedBits";
+  private static final int EXTENDED_BITS_ID = -4;
 
   public static final Map<AttributeOption, Integer> SIGNED_MAP = new HashMap<>() {{
       put(Multiplier.UNSIGNED_OPTION, 0);
@@ -41,8 +43,11 @@ public class MultiplierHdlGeneratorFactory extends AbstractHdlGeneratorFactory {
     myParametersList
         .add(NR_OF_BITS_STRING, NR_OF_BITS_ID)
         .add(CALC_BITS_STRING, CALC_BITS_ID, HdlParameters.MAP_MULTIPLY, 2)
-        .add(UNSIGNED_STRING, UNSIGNED_ID, HdlParameters.MAP_ATTRIBUTE_OPTION, Multiplier.MODE_ATTR, SIGNED_MAP);
+        .add(UNSIGNED_STRING, UNSIGNED_ID, HdlParameters.MAP_ATTRIBUTE_OPTION, Multiplier.MODE_ATTR, SIGNED_MAP)
+        .add(EXTENDED_BITS_STRING, EXTENDED_BITS_ID, HdlParameters.MAP_OFFSET, 1);
     myWires
+        .addWire("s_extendedA", EXTENDED_BITS_ID)
+        .addWire("s_extendedB", EXTENDED_BITS_ID)
         .addWire("s_multResult", CALC_BITS_ID)
         .addWire("s_extendedcarryIn", CALC_BITS_ID)
         .addWire("s_newResult", CALC_BITS_ID);
@@ -61,21 +66,19 @@ public class MultiplierHdlGeneratorFactory extends AbstractHdlGeneratorFactory {
         .pair("unsigned", UNSIGNED_STRING)
         .pair("calcBits", CALC_BITS_STRING);
     if (Hdl.isVhdl()) {
+      // Like Multiplier.computeProduct(): inputA is signed unless the mode is unsigned (0), inputB
+      // is only signed in the signed mode (2), and the carry is sign extended unless the mode is
+      // unsigned. Extending both operands by one bit lets a single signed multiplier handle all
+      // modes; the low calcBits bits of the product are exact in each of them.
       contents.empty().addVhdlKeywords().add("""
-          s_multResult <= std_logic_vector(unsigned(inputA)*unsigned(inputB))
-                              {{when}} {{unsigned}}= 1 {{else}}
-                           std_logic_vector(signed(inputA)*unsigned(inputB));
-                              {{when}} {{unsigned}}= 2 {{else}}
-                           std_logic_vector(signed(inputA)*signed(inputB));
-          s_extendedcarryIn({{calcBits}}-1 {{downto}} {{nrOfBits}}) <= ({{others}} => '0') {{when}} {{unsigned}} = 1 or {{unsigned}} = 2 {{else}} ({{others}} => carryIn({{nrOfBits}}-1));
-          s_extendedcarryIn({{nrOfBits}}-1 {{downto}} 0) <= carryIn;
-          s_newResult  <= std_logic_vector(unsigned(s_multResult) + unsigned(s_extendedcarryIn))
-                              {{when}} {{unsigned}}= 1 {{else}}
-                           std_logic_vector(signed(s_multResult) + unsigned(s_extendedcarryIn));
-                              {{when}} {{unsigned}}= 2 {{else}}
-                           std_logic_vector(signed(s_multResult) + signed(s_extendedcarryIn));
-          multHigh     <= s_newResult({{calcBits}}-1 {{downto}} {{nrOfBits}});
-          multLow      <= s_newResult({{nrOfBits}}-1 {{downto}} 0);
+          s_extendedA       <= ('0' & inputA) {{when}} {{unsigned}} = 0 {{else}} (inputA({{nrOfBits}}-1) & inputA);
+          s_extendedB       <= (inputB({{nrOfBits}}-1) & inputB) {{when}} {{unsigned}} = 2 {{else}} ('0' & inputB);
+          s_extendedcarryIn <= std_logic_vector(resize(unsigned(carryIn), {{calcBits}})) {{when}} {{unsigned}} = 0 {{else}}
+                               std_logic_vector(resize(signed(carryIn), {{calcBits}}));
+          s_multResult      <= std_logic_vector(resize(unsigned(std_logic_vector(signed(s_extendedA) * signed(s_extendedB))), {{calcBits}}));
+          s_newResult       <= std_logic_vector(unsigned(s_multResult) + unsigned(s_extendedcarryIn));
+          multHigh          <= s_newResult({{calcBits}}-1 {{downto}} {{nrOfBits}});
+          multLow           <= s_newResult({{nrOfBits}}-1 {{downto}} 0);
           """);
     } else {
       contents

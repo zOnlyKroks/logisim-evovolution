@@ -15,10 +15,12 @@ compiled with the generated module, its harness and the generic test bench
 'tb_logisim_component' and then simulated. Usually this script is started by the Gradle task
 'hdlVerificationVerilog'; to run it by hand:
 
-    python src/test/hdl/run_iverilog.py --suite build/hdl-verification/verilog
+    python src/test/hdl/run_iverilog.py --suite build/hdl-verification/suite/verilog
 
 VUnit does not support Icarus Verilog, hence this small runner. It needs only the Python
-standard library and 'iverilog'/'vvp' on the PATH, and can write a JUnit XML report.
+standard library and 'iverilog'/'vvp' on the PATH, and can write a JUnit XML report. It prints a
+short report, which only goes into detail for failing test cases; the log of every test case is
+written to <output path>/<test case>/log.txt.
 """
 
 import argparse
@@ -39,7 +41,7 @@ TOP = results_module.TEST_BENCH
 
 
 def run_case(case, suite, output, iverilog, vvp):
-    """Compiles and simulates one test case, returns (passed, log, seconds)."""
+    """Compiles and simulates one test case, writes its log and returns its CaseResult."""
     start = time.monotonic()
     work = output / case["name"]
     work.mkdir(parents=True, exist_ok=True)
@@ -52,14 +54,15 @@ def run_case(case, suite, output, iverilog, vvp):
         str(TEST_BENCH),
     ]
     log = []
-    result = run_logged(compile_command, log)
-    if result.returncode != 0:
-        return False, "\n".join(log), time.monotonic() - start
-    simulate_command = [vvp, "-n", str(executable), f"+vectors={(suite / case['vectors']).as_posix()}"]
-    result = run_logged(simulate_command, log)
-    verdicts = [line for line in result.stdout.splitlines() if line.startswith(("PASSED", "FAILED"))]
-    passed = result.returncode == 0 and bool(verdicts) and verdicts[-1].startswith("PASSED")
-    return passed, "\n".join(log), time.monotonic() - start
+    passed = False
+    if run_logged(compile_command, log).returncode == 0:
+        simulate_command = [vvp, "-n", str(executable), f"+vectors={(suite / case['vectors']).as_posix()}"]
+        result = run_logged(simulate_command, log)
+        verdicts = [line for line in result.stdout.splitlines() if line.startswith(("PASSED", "FAILED"))]
+        passed = result.returncode == 0 and bool(verdicts) and verdicts[-1].startswith("PASSED")
+    text = "\n".join(log).replace(str(suite) + os.sep, "")
+    (work / "log.txt").write_text(text + "\n", encoding="utf-8")
+    return results_module.CaseResult(passed, text, time.monotonic() - start)
 
 
 def run_logged(command, log):
@@ -76,45 +79,42 @@ def main():
     parser.add_argument("--suite", type=Path, required=True,
                         help="directory holding the generated Verilog suite (with manifest.json)")
     parser.add_argument("-o", "--output-path", type=Path, default=Path("iverilog_out"),
-                        help="directory for compiled simulations")
+                        help="directory for compiled simulations and logs")
     parser.add_argument("-x", "--xunit-xml", type=Path, help="write a JUnit XML report")
     parser.add_argument("-p", "--num-threads", type=int, default=0,
                         help="test cases run in parallel, 0 for one per CPU (default)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="print the log of passing cases")
     parser.add_argument("patterns", nargs="*", default=["*"],
                         help="test case name patterns, e.g. 'adder*'")
     args = parser.parse_args()
 
     iverilog, vvp = shutil.which("iverilog"), shutil.which("vvp")
     if not iverilog or not vvp:
-        sys.exit("iverilog and vvp must be on the PATH")
+        sys.exit(
+            "Icarus Verilog (iverilog and vvp) was not found on the PATH.\n"
+            "Install it (see docs/hdl_verification.md) and put it on the PATH, or pass its bin directory\n"
+            "to Gradle with -PhdlPath=<directory>."
+        )
+    # iverilog starts helper programs (ivlpp, ivl) from another directory; on Windows they must
+    # find the DLLs next to iverilog first, not the ones of another tool on the PATH (e.g. GHDL)
+    os.environ["PATH"] = os.path.dirname(iverilog) + os.pathsep + os.environ.get("PATH", "")
     suite = args.suite.resolve()
     output = args.output_path.resolve()
     manifest = json.loads((suite / "manifest.json").read_text(encoding="utf-8"))
     cases = [case for case in manifest["cases"]
              if any(fnmatch.fnmatch(case["name"], pattern) for pattern in args.patterns)]
-
     known_issues = {case["name"]: case.get("knownIssue") for case in cases}
 
     threads = args.num_threads or os.cpu_count() or 1
-    results = {}
-    verdicts = {}
     with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = [(case["name"], executor.submit(run_case, case, suite, output, iverilog, vvp))
-                   for case in cases]
-        for name, future in futures:
-            passed, log, seconds = future.result()
-            results[name] = (passed, log, seconds)
-            verdicts[name] = results_module.verdict(passed, known_issues[name])
-            print(f"{verdicts[name]} {name} ({seconds:.1f} s)")
-            if verdicts[name] == results_module.FAIL or args.verbose:
-                print(log)
+        futures = {case["name"]: executor.submit(run_case, case, suite, output, iverilog, vvp) for case in cases}
+        results = {name: future.result() for name, future in futures.items()}
 
     if args.xunit_xml:
         results_module.write_junit(
-            args.xunit_xml,
-            results_module.junit_testsuite("hdl-verification-verilog", results, known_issues))
-    sys.exit(0 if results_module.print_summary("Verilog", verdicts, known_issues) else 1)
+            args.xunit_xml, results_module.junit_testsuite("hdl-verification-verilog", results, known_issues)
+        )
+    log_location = output / "<test case>" / "log.txt"
+    sys.exit(0 if results_module.report("Verilog", results, known_issues, log_location) else 1)
 
 
 if __name__ == "__main__":

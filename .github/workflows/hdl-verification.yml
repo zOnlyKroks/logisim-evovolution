@@ -64,13 +64,12 @@ jobs:
         path: ~/.gradle/caches
         key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
         restore-keys: ${{ runner.os }}-gradle
-    - name: "Install simulators"
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ghdl iverilog
-        python -m pip install vunit_hdl
-        ghdl --version | head -n 1
-        iverilog -V 2>&1 | head -n 1
+    # Gradle downloads the simulators and sets up VUnit (task setUpHdlVerification)
+    - name: Cache the simulators and VUnit
+      uses: actions/cache@v6
+      with:
+        path: .gradle/hdl-verification
+        key: ${{ runner.os }}-hdl-verification-${{ hashFiles('src/test/hdl/setup_environment.py', 'src/test/hdl/requirements.txt') }}
     - name: "Run the HDL verification suite"
       env:
         # passed through the environment, so the inputs cannot inject shell code
@@ -82,7 +81,7 @@ jobs:
           verilog) task=hdlVerificationVerilog ;;
           *) task=hdlVerification ;;
         esac
-        options=(--continue -PhdlPython=python)
+        options=(--continue)
         if [ -n "$HDL_CASES" ]; then options+=("-PhdlCases=$HDL_CASES"); fi
         chmod +x gradlew
         ./gradlew "$task" "${options[@]}"

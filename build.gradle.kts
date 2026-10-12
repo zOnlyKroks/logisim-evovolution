@@ -286,13 +286,59 @@ tasks.named("processResources") {
  * HDL verification suite: simulates the VHDL/Verilog generated for components and checks it
  * against the Logisim simulation model. See docs/hdl_verification.md.
  *
- * Optional project properties:
- *   -PhdlCases=<regex>     only generate the test cases whose name matches
- *   -PhdlPython=<python>   Python interpreter with vunit_hdl installed (default: python3/python)
+ * Only Python 3 needs to be installed: the task setUpHdlVerification creates a Python environment
+ * with VUnit and downloads GHDL and Icarus Verilog (Windows and Linux on x86-64) into
+ * .gradle/hdl-verification. Optional project properties, which can also be set in
+ * ~/.gradle/gradle.properties:
+ *   -PhdlCases=<regex>        only generate the test cases whose name matches
+ *   -PhdlSimulators=system    use the simulators on the PATH instead of downloading them
+ *   -PhdlPath=<dirs>          directories searched for the simulators first, separated by the
+ *                             platform's path separator (';' on Windows, ':' elsewhere)
+ *   -PhdlPython=<python>      use this Python interpreter, which has vunit_hdl installed, instead
+ *                             of the Python environment set up by setUpHdlVerification
  */
 val hdlVerificationDir = layout.buildDirectory.dir("hdl-verification")
-val hdlVerificationPython = providers.gradleProperty("hdlPython")
-    .orElse(if (OperatingSystem.current().isWindows) "python" else "python3")
+// kept outside the build directory, so "clean" does not trigger new downloads
+val hdlToolsDir = layout.projectDirectory.dir(".gradle/hdl-verification").asFile
+val hdlIsWindows = OperatingSystem.current().isWindows
+val hdlPythonGiven = providers.gradleProperty("hdlPython").isPresent
+val hdlDownloadSimulators = providers.gradleProperty("hdlSimulators").getOrElse("download") != "system"
+val hdlVerificationPython = providers.gradleProperty("hdlPython").getOrElse(
+    hdlToolsDir.resolve(if (hdlIsWindows) "python/Scripts/python.exe" else "python/bin/python").absolutePath)
+
+/**
+ * Puts -PhdlPath and the downloaded simulator directories in front of the PATH of the task. Each
+ * task only gets its own simulator, as GHDL and Icarus Verilog ship different builds of the same
+ * DLLs on Windows.
+ */
+fun prependHdlSimulatorPath(task: Exec, simulatorDirectories: List<String>) {
+  val directories = mutableListOf<String>()
+  providers.gradleProperty("hdlPath").orNull?.let { directories.add(it) }
+  if (hdlDownloadSimulators) {
+    simulatorDirectories.forEach { directories.add(hdlToolsDir.resolve(it).absolutePath) }
+  }
+  if (directories.isEmpty()) return
+  val key = task.environment.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "PATH"
+  task.environment(key, (directories + (task.environment[key]?.toString() ?: "")).joinToString(File.pathSeparator))
+}
+
+val setUpHdlVerification = tasks.register<Exec>("setUpHdlVerification") {
+  group = "verification"
+  description = "Sets up Python with VUnit and downloads GHDL and Icarus Verilog for the HDL verification suite."
+  val needed = !hdlPythonGiven || hdlDownloadSimulators
+  onlyIf("needs the Python environment or the simulators") { needed }
+  val script = file("src/test/hdl/setup_environment.py")
+  val requirements = file("src/test/hdl/requirements.txt")
+  inputs.files(script, requirements)
+  inputs.property("python", !hdlPythonGiven)
+  inputs.property("simulators", hdlDownloadSimulators)
+  outputs.file(hdlToolsDir.resolve("environment.json"))
+  val arguments = mutableListOf(
+      if (hdlIsWindows) "python" else "python3", script.absolutePath, hdlToolsDir.absolutePath, requirements.absolutePath)
+  if (hdlPythonGiven) arguments.add("--no-python")
+  if (!hdlDownloadSimulators) arguments.add("--no-simulators")
+  commandLine(arguments)
+}
 
 val generateHdlVerificationSuite = tasks.register<JavaExec>("generateHdlVerificationSuite") {
   group = "verification"
@@ -310,11 +356,12 @@ val generateHdlVerificationSuite = tasks.register<JavaExec>("generateHdlVerifica
 
 val hdlVerificationVhdl = tasks.register<Exec>("hdlVerificationVhdl") {
   group = "verification"
-  description = "Runs the VHDL part of the HDL verification suite with VUnit (needs vunit_hdl and GHDL or NVC)."
-  dependsOn(generateHdlVerificationSuite)
+  description = "Runs the VHDL part of the HDL verification suite with VUnit and GHDL."
+  dependsOn(generateHdlVerificationSuite, setUpHdlVerification)
+  prependHdlSimulatorPath(this, listOf("ghdl/bin"))
   val outputDir = hdlVerificationDir.get().asFile
   commandLine(
-      hdlVerificationPython.get(),
+      hdlVerificationPython,
       file("src/test/hdl/run_vunit.py").absolutePath,
       "--suite", outputDir.resolve("suite/vhdl").absolutePath,
       "--output-path", outputDir.resolve("vunit_out").absolutePath,
@@ -326,10 +373,12 @@ val hdlVerificationVhdl = tasks.register<Exec>("hdlVerificationVhdl") {
 val hdlVerificationVerilog = tasks.register<Exec>("hdlVerificationVerilog") {
   group = "verification"
   description = "Runs the Verilog part of the HDL verification suite with Icarus Verilog."
-  dependsOn(generateHdlVerificationSuite)
+  dependsOn(generateHdlVerificationSuite, setUpHdlVerification)
+  // Icarus Verilog from conda-forge lives in Library/bin on Windows and in bin on Linux
+  prependHdlSimulatorPath(this, listOf("iverilog/Library/bin", "iverilog/bin"))
   val outputDir = hdlVerificationDir.get().asFile
   commandLine(
-      hdlVerificationPython.get(),
+      hdlVerificationPython,
       file("src/test/hdl/run_iverilog.py").absolutePath,
       "--suite", outputDir.resolve("suite/verilog").absolutePath,
       "--output-path", outputDir.resolve("iverilog_out").absolutePath,

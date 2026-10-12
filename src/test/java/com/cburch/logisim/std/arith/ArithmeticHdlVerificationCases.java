@@ -59,18 +59,12 @@ public final class ArithmeticHdlVerificationCases {
   private static final String MULTIPLIER_MODE_ISSUE =
       "The unsignedMultiplier generic is 0 (unsigned), 1 (mixed) or 2 (signed), but the HDL treats"
           + " 1 as unsigned, 2 as mixed and everything else as signed";
-  private static final String MULTIPLIER_VHDL_ISSUE =
-      "The VHDL does not compile: the conditional signal assignments contain stray semicolons. "
-          + MULTIPLIER_MODE_ISSUE;
   private static final String SUBTRACTOR_VERILOG_ISSUE =
       "dataA + ~(dataB) + n_bIn is evaluated at the width of {s_carry, result}, so ~dataB sets the"
           + " extra bit and the borrow out is inverted";
   private static final String SHIFTER_VERILOG_ISSUE =
       "Stage 0 shifts when shiftAmount != 0 instead of when shiftAmount[0] is set, and its shift-in"
           + " bit is dataA[shifterMode] (rotate left) or 0 (rotate right)";
-  private static final String SHIFTER_SRA_VHDL_ISSUE =
-      "Arithmetic right shifts fill with bit <stage number> of the stage input instead of the sign"
-          + " bit";
   private static final String BIT_COMPARATOR_VERILOG_ISSUE =
       "The one bit Verilog comparator ignores the twosComplement parameter";
 
@@ -102,7 +96,6 @@ public final class ArithmeticHdlVerificationCases {
             HdlTestCase.of("multiplier_" + mode.name() + suffix, new Multiplier())
                 .width(width)
                 .set(Multiplier.MODE_ATTR, mode.option())
-                .knownVhdlIssue(MULTIPLIER_VHDL_ISSUE)
                 .knownVerilogIssue(MULTIPLIER_MODE_ISSUE)
                 .build());
       }
@@ -111,12 +104,7 @@ public final class ArithmeticHdlVerificationCases {
             HdlTestCase.of("shifter_" + mode.name() + suffix, new Shifter())
                 .width(width)
                 .set(Shifter.ATTR_SHIFT, mode.option());
-        if (width > 1) {
-          testCase.knownVerilogIssue(SHIFTER_VERILOG_ISSUE);
-          if (mode.option() == Shifter.SHIFT_ARITHMETIC_RIGHT) {
-            testCase.knownVhdlIssue(SHIFTER_SRA_VHDL_ISSUE);
-          }
-        }
+        if (width > 1) testCase.knownVerilogIssue(SHIFTER_VERILOG_ISSUE);
         cases.add(testCase.build());
       }
     }
@@ -149,8 +137,7 @@ public final class ArithmeticHdlVerificationCases {
             HdlTestCase.of("multiplier_" + mode.name() + "_open_carry" + suffix, new Multiplier())
                 .width(width)
                 .set(Multiplier.MODE_ATTR, mode.option())
-                .floating(Multiplier.C_IN)
-                .knownVhdlIssue(MULTIPLIER_VHDL_ISSUE);
+                .floating(Multiplier.C_IN);
         // with a zero carry, the signed and unsigned one bit products happen to be equal
         if (width > 1 || mode.option() == Multiplier.SIGNED_UNSIGNED_OPTION) {
           testCase.knownVerilogIssue(MULTIPLIER_MODE_ISSUE);

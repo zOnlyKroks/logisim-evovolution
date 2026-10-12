@@ -83,9 +83,11 @@ public final class HdlVerificationSuite {
             .filter(testCase -> filter.matcher(testCase.getName()).find())
             .toList();
     final var failures = generate(cases, output);
-    System.out.printf(
-        "Generated %d HDL verification cases in %s%n", cases.size() - failures.size(), output);
-    failures.forEach((name, error) -> System.err.printf("FAILED to generate %s: %s%n", name, error));
+    if (cases.isEmpty()) System.err.println("No test case matches '" + filter.pattern() + "'");
+    if (!failures.isEmpty()) {
+      System.err.printf("%d of %d test cases could not be generated:%n", failures.size(), cases.size());
+      failures.forEach((name, error) -> System.err.printf("  %s: %s%n", name, error));
+    }
     // The preferences may have started background threads, so exit explicitly.
     System.exit(failures.isEmpty() ? 0 : 1);
   }

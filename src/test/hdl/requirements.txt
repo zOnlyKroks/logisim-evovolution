@@ -1,0 +1,3 @@
+# Python packages of the HDL verification suite, see docs/hdl_verification.md.
+# The Gradle tasks install them into build/hdl-verification/python unless -PhdlPython is given.
+vunit_hdl==4.7.1

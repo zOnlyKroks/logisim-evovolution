@@ -17,19 +17,20 @@ to run it by hand:
 
     python src/test/hdl/run_vunit.py --suite build/hdl-verification/suite/vhdl [VUnit options]
 
-All VUnit options are supported, e.g. '-p 8' to run in parallel, '--list' or a test pattern
-such as '*adder*'. The simulator is selected as usual for VUnit (VUNIT_SIMULATOR, default:
-the first one found, e.g. GHDL or NVC).
+All VUnit options are supported, e.g. '-p 8' to run in parallel or a test pattern such as
+'*adder*'. With --list, --files, --compile or --gui, VUnit runs as usual. The simulator is
+selected as usual for VUnit (VUNIT_SIMULATOR, default: the first one found, e.g. GHDL or NVC).
 
-Two things differ from a plain VUnit run:
+Otherwise VUnit runs in child processes whose output goes to <output path>/vunit.log, and this
+script prints a short report, which only goes into detail for failing test cases:
   * VUnit stops at the first compile error, so a generator producing invalid VHDL would hide
-    the results of all other test cases. This script therefore compiles all test cases first
-    (with --keep-compiling) and only runs the cases that compiled; the others count as failed.
+    the results of all other test cases. All test cases are therefore compiled first (with
+    --keep-compiling) and only the ones that compiled are run; the others count as failed.
   * Test cases with a known issue are expected to fail (see verification_results.py).
-The summary at the end and the exit code take both into account.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -37,13 +38,22 @@ import xml.etree.ElementTree as ElementTree
 from fnmatch import fnmatch
 from pathlib import Path
 
-from vunit import VUnit, VUnitCLI
+try:
+    from vunit import VUnit, VUnitCLI
+except ImportError:
+    sys.exit(
+        f"VUnit is not installed for {sys.executable}.\n"
+        "Run the suite with Gradle ('./gradlew hdlVerificationVhdl'), which sets up a Python environment with VUnit,\n"
+        "or install it: python -m pip install -r src/test/hdl/requirements.txt"
+    )
 
 import verification_results as results_module
 
 TEST_BENCH_FILE = Path(__file__).resolve().parent / "vhdl" / "tb_logisim_component.vhd"
 TEST_SUFFIX = f".{results_module.TEST_BENCH}.{results_module.TEST_NAME}"
 COMPILE_FAILURE = re.compile(r"^Compiling into (\S+?):\s+(.+?)\s+failed\s*$")
+# set for the VUnit child processes, which run VUnit as usual, leaving out the listed test cases
+CHILD_ENVIRONMENT = "LOGISIM_HDL_VERIFICATION_EXCLUDED"
 
 
 def parse_args():
@@ -55,6 +65,69 @@ def parse_args():
         help="directory holding the generated VHDL suite (with manifest.json)",
     )
     return cli.parse_args()
+
+
+def main():
+    args = parse_args()
+    suite = args.suite.resolve()
+    manifest = json.loads((suite / "manifest.json").read_text(encoding="utf-8"))
+
+    if CHILD_ENVIRONMENT in os.environ or args.compile or args.list or args.files or args.gui:
+        excluded = set(filter(None, os.environ.get(CHILD_ENVIRONMENT, "").split(",")))
+        run_vunit(args, suite, manifest, excluded)
+        return
+
+    known_issues = {case["name"]: case.get("knownIssue") for case in manifest["cases"]}
+    output_path = Path(args.output_path).resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
+    log = output_path / "vunit.log"
+    raw_xunit = output_path / "vunit_results.xml"
+    raw_xunit.unlink(missing_ok=True)
+
+    with log.open("w", encoding="utf-8") as log_file:
+        uncompilable = find_uncompilable_cases(log_file)
+        log_file.flush()
+        command = [sys.executable, __file__, *sys.argv[1:], "--no-color", "--xunit-xml", str(raw_xunit)]
+        environment = dict(os.environ, **{CHILD_ENVIRONMENT: ",".join(uncompilable)})
+        result = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, text=True, env=environment)
+    if not raw_xunit.exists():
+        # VUnit did not get to run the tests, e.g. because no simulator was found
+        print(log.read_text(encoding="utf-8", errors="replace"))
+        if "No available simulator" in log.read_text(encoding="utf-8", errors="replace"):
+            print(
+                "Install GHDL or NVC (see docs/hdl_verification.md) and put it on the PATH, or pass its bin\n"
+                "directory to Gradle with -PhdlPath=<directory>."
+            )
+        sys.exit(result.returncode or 1)
+
+    results = read_results(raw_xunit, suite)
+    for name, output in uncompilable.items():
+        if any(fnmatch(name + TEST_SUFFIX, pattern) for pattern in args.test_patterns):
+            output = output.replace(str(suite) + os.sep, "")
+            results[name] = results_module.CaseResult(False, "The generated VHDL does not compile:\n" + output)
+
+    if args.xunit_xml:
+        results_module.write_junit(
+            args.xunit_xml, results_module.junit_testsuite("hdl-verification-vhdl", results, known_issues)
+        )
+    sys.exit(0 if results_module.report("VHDL", results, known_issues, log) else 1)
+
+
+def run_vunit(args, suite, manifest, excluded):
+    """Runs VUnit as usual on the test cases that are not excluded."""
+    vu = VUnit.from_args(args=args, compile_builtins=False)
+    vu.add_vhdl_builtins()
+    for case in manifest["cases"]:
+        if case["name"] in excluded:
+            continue
+        library = vu.add_library(case["name"])
+        for source in case["sources"]:
+            library.add_source_file(suite / source)
+        library.add_source_file(copy_test_bench(suite / case["name"]))
+        library.test_bench(results_module.TEST_BENCH).set_generic(
+            "vector_file", (suite / case["vectors"]).as_posix()
+        )
+    vu.main()
 
 
 def copy_test_bench(directory):
@@ -71,10 +144,12 @@ def copy_test_bench(directory):
     return copy
 
 
-def find_uncompilable_cases():
+def find_uncompilable_cases(log_file):
     """Compiles all test cases in a VUnit child process, returns {test case: compiler output}."""
     command = [sys.executable, __file__, *sys.argv[1:], "--compile", "--keep-compiling", "--no-color"]
-    result = subprocess.run(command, capture_output=True, text=True)
+    environment = dict(os.environ, **{CHILD_ENVIRONMENT: ""})
+    result = subprocess.run(command, capture_output=True, text=True, env=environment)
+    log_file.write(result.stdout + result.stderr)
     failures = {}
     current = None
     in_output = False
@@ -92,77 +167,26 @@ def find_uncompilable_cases():
     if result.returncode != 0 and not failures:
         # not a compile error of a test case, let VUnit report it
         print(result.stdout + result.stderr)
+        if "No available simulator" in result.stdout + result.stderr:
+            print(
+                "Install GHDL or NVC (see docs/hdl_verification.md) and put it on the PATH, or pass its bin\n"
+                "directory to Gradle with -PhdlPath=<directory>."
+            )
         sys.exit(result.returncode)
     return {name: "\n".join(output) for name, output in failures.items()}
 
 
-def main():
-    args = parse_args()
-    suite = args.suite.resolve()
-    manifest = json.loads((suite / "manifest.json").read_text(encoding="utf-8"))
-    known_issues = {case["name"]: case.get("knownIssue") for case in manifest["cases"]}
-
-    uncompilable = {} if args.compile or args.list or args.files else find_uncompilable_cases()
-    # all uncompilable cases are left out, but only the selected ones are reported
-    compile_failures = {
-        name: output
-        for name, output in uncompilable.items()
-        if any(fnmatch(name + TEST_SUFFIX, pattern) for pattern in args.test_patterns)
-    }
-
-    vu = VUnit.from_args(args=args, compile_builtins=False)
-    vu.add_vhdl_builtins()
-    for case in manifest["cases"]:
-        if case["name"] in uncompilable:
-            continue
-        library = vu.add_library(case["name"])
-        for source in case["sources"]:
-            library.add_source_file(suite / source)
-        library.add_source_file(copy_test_bench(suite / case["name"]))
-        library.test_bench(results_module.TEST_BENCH).set_generic(
-            "vector_file", (suite / case["vectors"]).as_posix()
+def read_results(xunit, suite):
+    """Reads the VUnit JUnit report: {test case: CaseResult}."""
+    results = {}
+    for testcase in ElementTree.parse(xunit).getroot().iter("testcase"):
+        name = testcase.get("classname", "").split(".")[0]
+        output = testcase.findtext("system-out") or ""
+        failed = testcase.find("failure") is not None or testcase.find("error") is not None
+        results[name] = results_module.CaseResult(
+            not failed, output.replace(str(suite) + os.sep, ""), float(testcase.get("time") or 0)
         )
-
-    statuses = {}
-
-    def collect(results):
-        for test_name, result in results.get_report().tests.items():
-            statuses[test_name.split(".")[0]] = result.status
-
-    try:
-        vu.main(post_run=collect)
-    except SystemExit as exit_status:
-        if args.compile or args.list or args.files or not statuses and not compile_failures:
-            raise exit_status
-
-    verdicts = {}
-    for name, output in compile_failures.items():
-        verdicts[name] = results_module.verdict(False, known_issues.get(name))
-        if verdicts[name] == results_module.FAIL:
-            print(f"\nThe generated VHDL of {name} does not compile:\n{output}")
-    for name, status in statuses.items():
-        verdicts[name] = results_module.verdict(status == "passed", known_issues.get(name))
-
-    if args.xunit_xml:
-        update_xunit(Path(args.xunit_xml), compile_failures, verdicts, known_issues)
-    sys.exit(0 if results_module.print_summary("VHDL", verdicts, known_issues) else 1)
-
-
-def update_xunit(path, compile_failures, verdicts, known_issues):
-    """Adds the compile failures to the VUnit report and applies the known issues."""
-    tree = ElementTree.parse(path) if path.exists() else ElementTree.ElementTree(ElementTree.Element("testsuite"))
-    testsuite = tree.getroot()
-    for name, output in sorted(compile_failures.items()):
-        testcase = ElementTree.SubElement(
-            testsuite,
-            "testcase",
-            classname=f"{name}.{results_module.TEST_BENCH}",
-            name=results_module.TEST_NAME,
-        )
-        ElementTree.SubElement(testcase, "failure", message="The generated VHDL does not compile").text = output
-    testsuite.set("tests", str(len(list(testsuite.iter("testcase")))))
-    results_module.mark_known_issues(testsuite, verdicts, known_issues)
-    results_module.write_junit(path, testsuite)
+    return results
 
 
 if __name__ == "__main__":

@@ -183,7 +183,7 @@ public class ShifterHdlGeneratorFactory extends AbstractHdlGeneratorFactory {
       contents
           .add("""
             s_stage{{stageNumber}}ShiftIn <= s_stage{{stageNumber1}}Result( {{nrOfBits1}} {{downto}} {{bitsShiftDiff}} ) {{when}} {{shiftMode}} = 1 {{else}}
-                               ({{others}} => s_stage{{stageNumber1}}Result({{stageNumber1}})) {{when}} {{shiftMode}} = 3 {{else}}
+                               ({{others}} => s_stage{{stageNumber1}}Result({{nrOfBits1}})) {{when}} {{shiftMode}} = 3 {{else}}
                                s_stage{{stageNumber1}}Result( {{nrOfBitsToShift1}} {{downto}} 0 ) {{when}} {{shiftMode}} = 4 {{else}}
                                ({{others}} => '0');
 
